@@ -120,6 +120,13 @@ early_arm_refused:
  add sp,#OUT_SIZE
  pop {r0,r1,r4-r11,r12,lr}
  mov sp,r0
+#ifdef YP3_BOARD_ST7735S
+ /* The ST7735S board's PMU starts cold after its power switch cuts the
+  * battery (PMU[0x00] 0x48, PMU[0x20] 0x3c), which arming refuses: the
+  * loader, given 0, never starts the firmware. Boot without the recovery
+  * watchdog instead; a start from a PMU in a known state still arms it. */
+ b.w yp3_stock_stub_xip_setup
+#endif
  movs r0,#0
  msr apsr_nzcvq,r12
  /* Return 0 with IRQs enabled, as the ordinary (non-recovery) refusal

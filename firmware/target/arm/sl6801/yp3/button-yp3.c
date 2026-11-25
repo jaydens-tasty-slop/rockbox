@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Buttons: Up/Down on the ADC ladder, Left/Right on GPIO3.12 (probed with
  * two pin configurations), centre key via a PMU event signalled on GPIO2.2
- * (IRQ3). The scan runs from the kernel tick, one bounded phase per tick. */
+ * (IRQ3). On the ST7735S board all four direction keys are on the ladder
+ * and GPIO3.12 is left alone. The scan runs from the kernel tick, one
+ * bounded phase per tick. */
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -20,10 +22,19 @@
 #define SETTLE_TICKS      1000u   /* 1 ms of the 1 MHz counter */
 
 /* Key ladder levels on ADC channel 1 (12-bit sample; idle reads high). */
+#ifdef YP3_BOARD_ST7735S
+/* Upper bounds from the stock firmware's /dev/kadc_ch1 table. */
+#define LADDER_LEFT_BELOW  0x150u      /* < : Left (the boot key) */
+#define LADDER_GAP_BELOW   0x250u      /* < : no key */
+#define LADDER_RIGHT_BELOW 0x5a0u      /* < : Right */
+#define LADDER_DOWN_BELOW  0x850u      /* < : Down */
+#define LADDER_UP_BELOW    0xb90u      /* < : Up; no key above */
+#else
 #define LADDER_DOWN_BELOW 0x5c0u       /* < : Down */
 #define LADDER_UP_BELOW   0xc90u       /* < : Up */
 #define LADDER_NONE_BELOW 0xd00u       /* < : no key */
 #define LADDER_SD_BELOW   0xf50u       /* < : SD-detect level (unverified) */
+#endif
 /* Key ids the ladder levels map to. */
 #define KEY_ID_NONE       0x00u
 #define KEY_ID_UP         0x25u
@@ -69,10 +80,18 @@ static uint8_t center_tap;        /* ticks left of a latched tap */
 
 KEYS_ICODE static uint8_t adc_key_id(uint32_t raw)
 {
+#ifdef YP3_BOARD_ST7735S
+    if (raw < LADDER_LEFT_BELOW)  return KEY_ID_LEFT;
+    if (raw < LADDER_GAP_BELOW)   return KEY_ID_NONE;
+    if (raw < LADDER_RIGHT_BELOW) return KEY_ID_RIGHT;
+    if (raw < LADDER_DOWN_BELOW)  return KEY_ID_DOWN;
+    if (raw < LADDER_UP_BELOW)    return KEY_ID_UP;
+#else
     if (raw < LADDER_DOWN_BELOW) return KEY_ID_DOWN;
     if (raw < LADDER_UP_BELOW)   return KEY_ID_UP;
     if (raw < LADDER_NONE_BELOW) return KEY_ID_NONE;
     if (raw < LADDER_SD_BELOW)   return KEY_ID_SD_DETECT;
+#endif
     return KEY_ID_NONE;
 }
 
@@ -328,6 +347,8 @@ KEYS_ICODE static uint32_t map_scan(void)
     uint32_t v = 0;
     if (adc_id == KEY_ID_DOWN) v |= BUTTON_DOWN;
     if (adc_id == KEY_ID_UP) v |= BUTTON_UP;
+    if (adc_id == KEY_ID_LEFT) v |= BUTTON_LEFT;
+    if (adc_id == KEY_ID_RIGHT) v |= BUTTON_RIGHT;
     if (gpio_id == KEY_ID_LEFT) v |= BUTTON_LEFT;
     if (gpio_id == KEY_ID_RIGHT) v |= BUTTON_RIGHT;
     return v;
@@ -385,6 +406,10 @@ KEYS_ICODE static void scan_tick(void)
     switch (scan_phase) {
     case 0:
         adc_id = adc_key_id(REG(ADC_KEY_SAMPLE));
+#ifdef YP3_BOARD_ST7735S
+        finish_scan();
+        break;
+#endif
         yp3_pin_config(PIN_OWNER_KEYS, PIN_KEY_LR_PULLUP);
         if (!sl6801_counter64(&settle_started))
             return;

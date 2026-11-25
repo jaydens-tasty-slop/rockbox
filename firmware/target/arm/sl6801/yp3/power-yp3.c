@@ -318,6 +318,7 @@ static void core_voltage_init(void)
 #define P_E0                     (PMU_BASE + 0xe0)
 #define P_E4                     (PMU_BASE + 0xe4)
 #define SLOW_CLOCK_POLLS         20000u     /* 1 us apart */
+#define SLOW_CLOCK_UNMEASURED    0x8000u    /* PMU_PORT_SLOW_CLOCK's reset value */
 /* Sequencer step times (us), stored in slow-clock periods next to fixed
  * bits whose roles are unknown. */
 #define P_DC_STEP_US             3000u
@@ -353,6 +354,14 @@ static void sequencer_timing(void)
         wait_us(1);
     if (!hz)
         return;
+#ifdef YP3_BOARD_ST7735S
+    /* On the ST7735S board the rate reads 0x8000 after a cold start, and
+     * ~52.9 kHz once the stock firmware has run; steps from 0x8000 would
+     * come out ~40% short. Then keep the step times already set, which
+     * read longer. */
+    if (hz == SLOW_CLOCK_UNMEASURED)
+        return;
+#endif
     uint32_t d = 1000000u / hz;             /* slow-clock period, us */
     if (!d)
         return;
@@ -361,6 +370,38 @@ static void sequencer_timing(void)
     REG(P_E4) = (P_E4_STEP0_US / d) | ((P_E4_STEP1_US / d) << P_E4_STEP1_SHIFT) |
                 P_E4_FIXED;
 }
+
+#ifdef YP3_BOARD_ST7735S
+/* The ST7735S board's stock firmware sets the charger up at every boot, and
+ * a power cycle resets part of it (pmu-yp3.h): left alone, 0x14 selects the
+ * 4600 mV CV tier. Same writes, same order; charging on/off (0x17 bit 2)
+ * stays with charge_guard(). Called with the PMU locked. */
+static void charger_setup(void)
+{
+    uint8_t v;
+    if (yp3_pmu_read(PMU_REG_16, PMU_POLLS, &v))
+        yp3_pmu_write(PMU_REG_16, ((v & PMU16_RANGE) ? PMU16_200MA_RANGE1
+                                                     : PMU16_200MA_RANGE0) |
+                                  (v & 0xc0) | PMU16_SET, PMU_POLLS);
+    yp3_pmu_write(PMU_REG_14, PMU14_STOCK, PMU_POLLS);
+    yp3_pmu_write(PMU_REG_15, PMU15_STOCK, PMU_POLLS);
+    pmu_update(PMU_REG_13, (uint8_t)~PMU13_KEEP, PMU13_STOCK);
+    pmu_update(PMU_REG_CHARGE, PMU17_STOCK_CLEAR, PMU17_STOCK_SET);
+    pmu_update(PMU_REG_1C, PMU1C_FIELD, PMU1C_STOCK);
+    pmu_update(PMU_REG_47, 0, PMU47_BATTERY_ENABLE);
+}
+
+/* The rest of what the ST7735S board's stock firmware sets at every boot
+ * and a cold PMU lacks (pmu-yp3.h), before the core moves to its LDO. The
+ * trim bank must be on. Called with the PMU locked. */
+static void cold_pmu_setup(void)
+{
+    uint32_t trim = (REG(TRIM_WORD_28) >> TRIM28_PMU11_SHIFT) & TRIM28_PMU11_MASK;
+    if (trim)
+        yp3_pmu_write(PMU_REG_11, trim, PMU_POLLS);
+    pmu_update(PMU_REG_01, PMU01_BIT4, 0);
+}
+#endif
 
 static void yp3_board_setup(void)
 {
@@ -375,6 +416,9 @@ static void yp3_board_setup(void)
     yp3_pmu_write(PMU_REG_22, 0, PMU_POLLS);
     pmu_update(PMU_REG_00, PMU00_BITS21, 0);
     trim_bank_on();
+#ifdef YP3_BOARD_ST7735S
+    cold_pmu_setup();
+#endif
     /* The core runs from the rail-4 node until the LDO is up (F-0039). */
     if (core_ldo_enable())
         pmu_update(PMU_REG_RAILS, PMU2C_RAIL4, 0);
@@ -391,6 +435,9 @@ static void yp3_board_setup(void)
     pmu_update(PMU_REG_1B, 0, PMU1B_PULSE);
     pmu_update(PMU_REG_1B, PMU1B_PULSE, 0);
     sequencer_timing();
+#ifdef YP3_BOARD_ST7735S
+    charger_setup();
+#endif
     restore_irq(irq);
     yp3_pmu_unlock();
     if (core_mv)
@@ -430,7 +477,8 @@ void power_init(void)
 }
 
 /* Charging: the PMU charger is configured by the stock loader
- * (PMU[0x13..0x16], [0x1c]); charging runs while PMU[0x17] bit 2 is set. It
+ * (PMU[0x13..0x16], [0x1c]; on the ST7735S board by charger_setup());
+ * charging runs while PMU[0x17] bit 2 is set. It
  * is set on charger-in and cleared on charger-out and on the charge-full
  * event (PMU[0x30] bit 1). The voltage limit is a safety net: readings while
  * charging sit ~80 mV high. */
@@ -495,8 +543,9 @@ static void charge_guard(int mv)
     charge_enabled = want;
 }
 
-/* Request a conversion with PMU[0x47] bit 4, read the 7-bit result from
- * PMU[0x2e] (constants above). */
+/* Enable conversions (PMU[0x47] bit 0, in a write of its own; it stays
+ * set), request one with bit 4, read the 7-bit result from PMU[0x2e]
+ * (constants above). */
 int _battery_voltage(void)
 {
     static int last_mv = BATTERY_MV_INITIAL;
@@ -504,7 +553,12 @@ int _battery_voltage(void)
 
     if (!pmu_lock_wait())
         return last_mv;
-    if (yp3_pmu_read(PMU_REG_47, PMU_POLLS, &ctl) &&
+    bool enabled = yp3_pmu_read(PMU_REG_47, PMU_POLLS, &ctl);
+    if (enabled && !(ctl & PMU47_BATTERY_ENABLE)) {
+        ctl |= PMU47_BATTERY_ENABLE;
+        enabled = yp3_pmu_write(PMU_REG_47, ctl, PMU_POLLS);
+    }
+    if (enabled &&
         yp3_pmu_write(PMU_REG_47, ctl | PMU47_BATTERY_MEASURE, PMU_POLLS)) {
         /* conversion time: 2 ms read stale data, 20 ms works;
          * +1 tick so at least 20 ms pass */

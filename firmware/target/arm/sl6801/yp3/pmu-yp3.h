@@ -83,12 +83,51 @@ extern volatile uint8_t yp3_pmu_events30;
 #define PMU_USB_RAIL_B_KEEP     0xf8    /* bits 7:3 preserved, role unknown */
 #define PMU_USB_RAIL_B_VALUE    0x05
 
-/* 0x11: trim from the efuse bank ; not written by us. */
-#define PMU_REG_11              0x11
+/* Registers the ST7735S board's stock firmware sets at every boot and a
+ * power cycle resets (its power switch cuts the battery, so the PMU often
+ * starts cold); Rockbox sets them the same way there (power-yp3.c,
+ * cold_pmu_setup()). Roles unknown.
+ * 0x01: bit 4 cleared (stock: reads 0x00 after its boot, 0x10 cold). */
+#define PMU_REG_01              0x01
+#define PMU01_BIT4              0x10
 
-/* 0x17: charger control; bit 2 = charging enabled . */
+/* 0x11: trim from the efuse bank, TRIM_WORD_28 bits 11:6 (stock firmware
+ * writes it at boot when nonzero). Written by us on the ST7735S board
+ * only. */
+#define PMU_REG_11              0x11
+#define TRIM28_PMU11_SHIFT      6
+#define TRIM28_PMU11_MASK       0x3fu
+
+/* 0x13..0x16: charger setup. The ST7735S board's stock firmware writes
+ * these at every boot (power-yp3.c, charger_setup()); a power cycle resets
+ * 0x14..0x16 (to 0x54, 0x87, 0x99). 0x14 bits 6:5 = CV tier (0x20 = 4250
+ * mV, 0x40 = 4600 mV). Other fields' roles are not known; the values are
+ * the stock firmware's. */
+#define PMU_REG_13              0x13
+#define PMU13_KEEP              0x07
+#define PMU13_STOCK             0x28
+#define PMU_REG_14              0x14
+#define PMU14_STOCK             0x34
+#define PMU_REG_15              0x15
+#define PMU15_STOCK             0x84
+#define PMU_REG_16              0x16
+#define PMU16_RANGE             0x80    /* kept; picks the current scale */
+#define PMU16_SET               0x40
+#define PMU16_200MA_RANGE1      0x18    /* (200000 - 4000) / 8000 */
+#define PMU16_200MA_RANGE0      0x27    /* (200000 - 2500) / 5000 */
+
+/* 0x17: charger control; bit 2 = charging enabled. Bit 4 is set and bit 0
+ * cleared by the ST7735S board's stock firmware; roles unknown. */
 #define PMU_REG_CHARGE          0x17
 #define PMU17_CHARGE_ENABLE     0x04
+#define PMU17_STOCK_SET         0x10
+#define PMU17_STOCK_CLEAR       0x01
+
+/* 0x1c: bits 7:5 = 4 after the ST7735S board's stock charger setup (it
+ * computes them with a ROM call), 0 cold. */
+#define PMU_REG_1C              0x1c
+#define PMU1C_FIELD             0xe0
+#define PMU1C_STOCK             0x80
 
 /* 0x19, 0x1a, 0x4b: event interrupt masks, 1 = masked (only some bits read
  * back). */
@@ -172,9 +211,12 @@ extern volatile uint8_t yp3_pmu_events30;
                                            content unknown */
 
 /* 0x47: bit 4 requests a battery voltage conversion (set it, wait, read
- * PMU_REG_BATTERY, clear it). Bit 0 is charger config
- * set before Rockbox runs; other bits unknown. */
+ * PMU_REG_BATTERY, clear it). Bit 0 enables the conversion: it must be set,
+ * in a write of its own, before bit 4 rises, or PMU_REG_BATTERY reads 0x80
+ * (code 0). A power cycle clears it on the ST7735S board (the stock firmware
+ * sets it at every boot); other bits unknown. */
 #define PMU_REG_47              0x47
+#define PMU47_BATTERY_ENABLE    0x01
 #define PMU47_BATTERY_MEASURE   0x10
 
 #endif

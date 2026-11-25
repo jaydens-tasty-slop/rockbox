@@ -135,13 +135,19 @@
 
 #define PIN_BACKLIGHT_PWM   YP3_PIN(1, 17, MUX_ALT5, 0, DIR_0, PULL_NONE)
 /* Speaker amplifier enable (observed: pull code 0xb = speaker on, no pull
- * = off; mux 0, latch low). */
+ * = off; mux 0, latch low). The ST7735S board's stock firmware turns it on
+ * with pull code 8 instead. */
+#ifdef YP3_BOARD_ST7735S
+#define PIN_AMP_ON          YP3_PIN(1, 30, MUX_GPIO, 0, DIR_0, PULL_8)
+#else
 #define PIN_AMP_ON          YP3_PIN(1, 30, MUX_GPIO, 0, DIR_0, PULL_UP)
+#endif
 #define PIN_AMP_OFF         YP3_PIN(1, 30, MUX_GPIO, 0, DIR_0, PULL_NONE)
 
-/* Up/Down resistor ladder into the key ADC (it also shows an SD-detect
- * level); it must also be analog during LCD bring-up (without it the
- * LCD shows coloured noise), so the LCD driver configures it too. */
+/* Resistor ladder into the key ADC: Up/Down (all four direction keys on
+ * the ST7735S board; it also shows an SD-detect level); it must also be
+ * analog during LCD bring-up (without it the LCD shows coloured noise), so
+ * the LCD driver configures it too. */
 #define PIN_KEY_LADDER      YP3_PIN(3, 0, MUX_ANALOG, 0, DIR_0, PULL_NONE)
 /* Left/Right: one pad, probed with a pull-up (Right reads low) and a
  * pull-down (Left reads high). */

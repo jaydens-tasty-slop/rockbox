@@ -30,6 +30,9 @@
 #   YP3_CACHE   download cache (default OUTDIR/cache)
 #   JOBS        parallel make jobs (default: the CPUs, at most 10)
 #   SOURCE_DATE_EPOCH  the build date (default: the commit's)
+#   YP3_BOARD   gc9106 (default) or st7735s: the board to build for
+#               (config/yp3.h); the package expects that board's partition
+#               table (st7735s needs a mkpkg.py with --board)
 # The build reaches this tree through a short symlink, YP3_SRC_LINK
 # (default /tmp/yp3-src): from a long path the dependency step overflows
 # the kernel's limit on one shell argument. One build at a time per link.
@@ -47,6 +50,14 @@ CACHE=$(realpath -m "${YP3_CACHE:-$OUT/cache}")
 MKPKG=$(realpath "$MKPKG")
 [ -n "${YP3_ASSETS:-}" ] || die "set YP3_ASSETS (see $0)"
 JOBS=${JOBS:-$(nproc)}; [ "$JOBS" -gt 10 ] && JOBS=10
+# The default board passes no --board, so a mkpkg.py older than the option
+# (the workflow's pinned ROCKSLOP_REF) still packages it.
+BOARD=${YP3_BOARD:-gc9106}
+case "$BOARD" in
+    gc9106)  BOARD_DEFINES= BOARD_ARGS= ;;
+    st7735s) BOARD_DEFINES=-DYP3_BOARD_ST7735S BOARD_ARGS="--board st7735s" ;;
+    *) die "bad YP3_BOARD '$BOARD' (gc9106 or st7735s)" ;;
+esac
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
     SOURCE_DATE_EPOCH=$(git -C "$TREE" log -1 --format=%ct 2>/dev/null || date +%s)
 fi
@@ -106,7 +117,7 @@ cd "$B"
 [ -f Makefile ] || "$SRC/tools/configure" --no-ccache --compiler-prefix="$TCDIR/bin/arm-none-eabi-" \
     --target=yp3 --ram=1 --rbdir=/.rockbox --type=N >/dev/null
 mk() {
-    make EXTRA_DEFINES=-DYP3_RECOVERY_WATCHDOG POKITTO_UPSTREAM="$CACHE/pokitto" "$@"
+    make EXTRA_DEFINES="-DYP3_RECOVERY_WATCHDOG $BOARD_DEFINES" POKITTO_UPSTREAM="$CACHE/pokitto" "$@"
 }
 # Generated headers first: in a parallel build some apps/ objects can
 # compile before lang.h exists.
@@ -137,7 +148,8 @@ echo "module ID $(sed 's/.*= //; s/;//' module_build_id.lds); card tree $(du -sh
      "$(ls "$C/.rockbox/themes" | wc -l) themes"
 
 PKG=rockbox-yp3-$VERSION.tar.xz
-python3 "$MKPKG" yp3 --placer "$SRC/tools/yp3/package.py" --elf "$B/rockbox.elf" \
+# BOARD_ARGS unquoted: empty, or two words
+python3 "$MKPKG" yp3 $BOARD_ARGS --placer "$SRC/tools/yp3/package.py" --elf "$B/rockbox.elf" \
     --codecs "$B/lib/rbcodec/codecs/xip/codecs.flash" --card "$C" \
     --version "$VERSION" --title "Rockbox for the YP3" -o "$OUT/$PKG"
 cd "$OUT"

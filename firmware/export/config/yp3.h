@@ -59,8 +59,14 @@
 #define HAVE_KBD_COMPACT_LAYOUT
 /* Boot logo: this note under it, in red (apps/main.c) */
 #define BOOT_LOGO_NOTE "Unofficial Build"
+/* Board variant, chosen at build time (EXTRA_DEFINES):
+ *   default             GC9106 panel; Up/Down on the key ladder, Left/Right
+ *                       on GPIO3.12; boot key Down.
+ *   YP3_BOARD_ST7735S   ST7735S panel; all four direction keys on the key
+ *                       ladder; boot key Left. Its stock FIRM partition is
+ *                       0x174270 bytes (the GC9106 board's is 0x192b18). */
 #define HAVE_LCD_COLOR
-#define LCD_DEPTH 16                /* RGB565, the GC9106's native format */
+#define LCD_DEPTH 16                /* RGB565, the panel's native format */
 #define LCD_PIXELFORMAT RGB565SWAPPED /* byte order the LCD FIFO sends (DMA) */
 #define HAVE_LCD_INVERT
 #define HAVE_LCD_ENABLE

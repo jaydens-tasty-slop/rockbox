@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* YP3 LCD: 128x160 GC9106 panel on the SL6801 LCD controller. The
- * framebuffer is byte-swapped RGB565 (the controller shifts out the low byte
- * first, the panel wants the high byte first), so updates DMA it unchanged
- * into the controller FIFO. Cold init sends the panel's init command
- * stream; commands use PIO. */
+/* YP3 LCD: 128x160 GC9106 panel (ST7735S with YP3_BOARD_ST7735S) on the
+ * SL6801 LCD controller. The framebuffer is byte-swapped RGB565 (the
+ * controller shifts out the low byte first, the panel wants the high byte
+ * first), so updates DMA it unchanged into the controller FIFO. Cold init
+ * sends the panel's init command stream; commands use PIO. */
 #include "config.h"
 #include "lcd.h"
 #include "events.h"
@@ -95,9 +95,22 @@
                                    RGB/BGR) */
 #define DCS_PIXEL_FORMAT 0x3au  /* data 0x05 = 16 bits/pixel */
 #define DCS_TEAR_SCANLINE 0x44u
+#define DCS_SOFT_RESET  0x01u
+#ifdef YP3_BOARD_ST7735S
+/* MADCTL 0xc8: row and column order reversed (MY|MX), i.e. the image
+ * turned 180 degrees, and BGR subpixel order (as the stock firmware). */
+#define MADCTL_FINAL    0xc8u
+/* Inversion off shows RGB565 values as themselves. */
+#define PANEL_INVERT_NORMAL   DCS_INVERT_OFF
+#define PANEL_INVERT_INVERTED DCS_INVERT_ON
+#else
 /* MADCTL 0xc0: row and column order reversed (DCS bits MY|MX), i.e. the
  * image turned 180 degrees. */
 #define MADCTL_FINAL    0xc0u
+/* This panel inverts in hardware: inversion on is normal. */
+#define PANEL_INVERT_NORMAL   DCS_INVERT_ON
+#define PANEL_INVERT_INVERTED DCS_INVERT_OFF
+#endif
 /* GalaxyCore commands. GC9106 datasheet: FEh/EFh = "Inter Register
  * Enable 1/2". `fe fe ef` is sent at the start of the init (standard
  * DCS commands such as 21/36/3a and 10/11 still follow, so it is not a
@@ -134,10 +147,15 @@
 #define COUNTER_TICKS_PER_MS 1000u
 #define PUSH_POLLS      10000u   /* status polls in the pixel push */
 
-/* The 128x160 image sits at column 2, row 1 of the panel's memory, so
- * window coordinates are shifted by these. */
+/* On the GC9106 the 128x160 image sits at column 2, row 1 of the panel's
+ * memory, so window coordinates are shifted by these. */
+#ifdef YP3_BOARD_ST7735S
+#define COLUMN_OFFSET   0u
+#define ROW_OFFSET      0u
+#else
 #define COLUMN_OFFSET   2u
 #define ROW_OFFSET      1u
+#endif
 
 /* Panel timing (Rockbox ticks). */
 #define PANEL_SLEEP_SETTLE (HZ * 12 / 100) /* 120 ms around sleep in/out */
@@ -313,9 +331,31 @@ static const uint32_t lcd_pins[] = {
 struct command_data {
     uint8_t command;
     uint8_t length;
-    uint8_t bytes[14];
+    uint8_t bytes[16];
 };
 
+#ifdef YP3_BOARD_ST7735S
+/* ST7735S init table, sent after soft reset and sleep-out (panel_init);
+ * values from the ST7735S board's stock firmware, including its repeated
+ * b4. b1 frame rate, b4 inversion control, c0..c5 power control, e0/e1
+ * gamma. */
+static const struct command_data init_data[] = {
+    {0xb1, 3, {0x05, 0x3c, 0x3c}},
+    {0xb4, 1, {0x02}},
+    {0xb4, 1, {0x03}},
+    {0xc0, 3, {0x28, 0x08, 0x84}},
+    {0xc1, 1, {0xc0}},
+    {0xc2, 2, {0x0d, 0x00}},
+    {0xc3, 2, {0x8d, 0x2a}},
+    {0xc4, 2, {0x8d, 0xee}},
+    {0xc5, 1, {0x16}},
+    {0xe0, 16, {0x04,0x22,0x07,0x0a,0x2e,0x30,0x25,0x2a,
+                 0x28,0x26,0x2e,0x3a,0x00,0x01,0x03,0x13}},
+    {0xe1, 16, {0x04,0x16,0x06,0x0d,0x2d,0x26,0x23,0x27,
+                 0x27,0x25,0x2d,0x3b,0x00,0x01,0x04,0x13}},
+    {DCS_PIXEL_FORMAT, 1, {0x05}},  /* 16 bits/pixel (RGB565) */
+};
+#else
 /* GC9106 init table, sent after `fe fe ef` (panel_init); values from stock
  * firmware. lcd_command() inserts INVON before MADCTL and reorders the tail
  * (see there). The a3..b6 and f0/f1 entries
@@ -337,6 +377,7 @@ static const struct command_data init_data[] = {
     {DCS_TEAR_ON, 1, {0x00}},       /* mode 0 */
     {DCS_TEAR_SCANLINE, 1, {0x00}},
 };
+#endif
 
 /* Progress of the tail reordering in lcd_command()/lcd_data(). */
 enum {
@@ -438,6 +479,24 @@ static int lcd_data_raw(uint8_t value)
     return 0;
 }
 
+#ifdef YP3_BOARD_ST7735S
+static int panel_init(struct cold_ctx *c)
+{
+    (void)c;
+    /* Soft reset, then sleep-out, with the stock firmware's waits. */
+    if (lcd_command_raw(DCS_SOFT_RESET) || delay_units(120) ||
+        lcd_command_raw(DCS_SLEEP_OUT) || delay_units(240))
+        return 1;
+    for (unsigned i = 0; i < sizeof(init_data) / sizeof(init_data[0]); ++i) {
+        if (lcd_command_raw(init_data[i].command)) return 1;
+        for (unsigned j = 0; j < init_data[i].length; ++j)
+            if (lcd_data_raw(init_data[i].bytes[j])) return 1;
+    }
+    if (lcd_command_raw(DCS_DISPLAY_ON) || lcd_command_raw(DCS_MEMORY_WRITE))
+        return 1;
+    return 0;
+}
+#else
 static int lcd_command(struct cold_ctx *c, uint8_t value)
 {
     /* The init table puts 35/44 (TEAR_ON/TEAR_SCANLINE) before panel_init's
@@ -509,6 +568,7 @@ static int panel_init(struct cold_ctx *c)
         return 1;
     return 0;
 }
+#endif
 
 /* Reset pulse and the full init table: from any panel state. */
 static int panel_restart(struct cold_ctx *c)
@@ -614,15 +674,22 @@ static bool lcd_inverted;       /* lcd_set_invert_display, kept for wakes */
  * asleep; on (backlight on): awake with the current frame, then the
  * backlight (the caller) comes on.
  *
- * Sleep and wake send `fe ef 10` / `fe ef 11`, then `fe ff`, as the init
- * table does before its own sleep-out: without the `fe ff`,
+ * On the GC9106, sleep and wake send `fe ef 10` / `fe ef 11`, then `fe ff`,
+ * as the init table does before its own sleep-out: without the `fe ff`,
  * pixel pushes that raced the sleep
  * (lcd_on was checked outside the lock) could land in configuration
- * registers and leave the panel white until a reset. The panel needs
+ * registers and leave the panel white until a reset. The ST7735S takes
+ * plain 10 / 11. The panel needs
  * 120 ms between sleep-in and sleep-out, and 120 ms after sleep-out. */
 static bool lcd_on = true;
 static long lcd_slept_tick;
 
+#ifdef YP3_BOARD_ST7735S
+static int panel_page_command(uint8_t command)
+{
+    return push_command(command);
+}
+#else
 /* One command after `fe ef` (inter register enable 1/2), then `fe ff`. */
 static int panel_page_command(uint8_t command)
 {
@@ -630,6 +697,7 @@ static int panel_page_command(uint8_t command)
            push_command(command) ||
            push_command(GC_INTER_REG_EN1) || push_command(GC_CMD_FF);
 }
+#endif
 
 void lcd_enable(bool on)
 {
@@ -648,7 +716,8 @@ void lcd_enable(bool on)
             err = dma_setup();
         }
         err = err || panel_page_command(DCS_SLEEP_OUT) ||
-              push_command(lcd_inverted ? DCS_INVERT_OFF : DCS_INVERT_ON);
+              push_command(lcd_inverted ? PANEL_INVERT_INVERTED
+                                        : PANEL_INVERT_NORMAL);
         if (!err) {
             sleep(PANEL_SLEEP_SETTLE + 1);
             err = push_rows((const fb_data *)lcd_framebuffer_default.fb_ptr,
@@ -739,9 +808,9 @@ void lcd_update(void)
 #endif
 }
 
-/* The panel inverts in hardware: INVON (0x21) is normal here.
- * While the panel sleeps (controller clock gated) the setting waits for
- * the wake. */
+/* The GC9106 inverts in hardware: INVON (0x21) is normal there
+ * (PANEL_INVERT_NORMAL). While the panel sleeps (controller clock gated)
+ * the setting waits for the wake. */
 void lcd_set_invert_display(bool yesno)
 {
     bool lock = dma_irq_mode && irq_enabled() && get_interrupt_number() == 0;
@@ -752,7 +821,7 @@ void lcd_set_invert_display(bool yesno)
 #ifdef HAVE_LCD_ENABLE
         lcd_on &&
 #endif
-        push_command(yesno ? DCS_INVERT_OFF : DCS_INVERT_ON))
+        push_command(yesno ? PANEL_INVERT_INVERTED : PANEL_INVERT_NORMAL))
         lcd_state = LCD_FAILED;
     if (lock)
         mutex_unlock(&lcd_mtx);
